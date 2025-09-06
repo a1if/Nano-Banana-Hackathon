@@ -1,14 +1,6 @@
 import { GoogleGenAI, Modality, GenerateContentResponse } from "@google/genai";
 import type { GenerationResult } from '../types';
 
-const fileToBase64 = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve((reader.result as string).split(',')[1]);
-    reader.onerror = (error) => reject(error);
-  });
-
 const dataUrlToInfo = (dataUrl: string): { base64: string; mimeType: string } => {
   const [metaPart, dataPart] = dataUrl.split(',');
   const mimeType = metaPart.split(':')[1].split(';')[0];
@@ -16,43 +8,48 @@ const dataUrlToInfo = (dataUrl: string): { base64: string; mimeType: string } =>
 };
 
 
-export const visualizeDesign = async (imageSource: File | string, prompt: string): Promise<GenerationResult[]> => {
+export const visualizeDesign = async (imageSource: string, prompt: string, maskSource?: string | null): Promise<GenerationResult[]> => {
   if (!process.env.API_KEY) {
     throw new Error("API_KEY environment variable is not set.");
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  let base64ImageData: string;
-  let mimeType: string;
-
-  if (typeof imageSource === 'string') {
-    const { base64, mimeType: mt } = dataUrlToInfo(imageSource);
-    base64ImageData = base64;
-    mimeType = mt;
-  } else {
-    base64ImageData = await fileToBase64(imageSource);
-    mimeType = imageSource.type;
-  }
+  const { base64: base64ImageData, mimeType } = dataUrlToInfo(imageSource);
 
   // This function generates a single design. We will call it multiple times in parallel.
   const generateSingleDesign = async (): Promise<GenerationResult | null> => {
     try {
+      const imagePart = {
+        inlineData: {
+          data: base64ImageData,
+          mimeType: mimeType,
+        },
+      };
+
+      const textPart = { text: prompt };
+
+      const imageParts = [imagePart];
+
+      if (maskSource) {
+        const { base64: maskBase64, mimeType: maskMimeType } = dataUrlToInfo(maskSource);
+        const maskPart = {
+          inlineData: {
+            data: maskBase64,
+            mimeType: maskMimeType,
+          },
+        };
+        imageParts.push(maskPart);
+      }
+      
+      // FIX: The parts array for the API call must be correctly typed to accept both image
+      // and text parts. By creating the final array at the end with the spread operator,
+      // TypeScript can correctly infer the union type for the array elements.
+      const parts = [...imageParts, textPart];
+
       const response: GenerateContentResponse = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image-preview',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: base64ImageData,
-                mimeType: mimeType,
-              },
-            },
-            {
-              text: prompt,
-            },
-          ],
-        },
+        contents: { parts: parts },
         config: {
           responseModalities: [Modality.IMAGE, Modality.TEXT],
         },

@@ -8,10 +8,16 @@ import { DrawingToolbar } from './components/DrawingToolbar';
 import { ObjectUploader } from './components/ObjectUploader';
 import { visualizeDesign } from './services/geminiService';
 import { GenerationResult, DrawingOptions, DesignIteration, UploadedObject } from './types';
+import { ZoomControls } from './components/ZoomControls';
 
 interface CanvasRef {
   getCombinedDataUrl: () => string | null;
+  getMaskDataUrl: () => string | null;
+  hasDrawings: () => boolean;
   getCanvas: () => HTMLCanvasElement | null;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  resetZoom: () => void;
 }
 
 function App() {
@@ -33,6 +39,7 @@ function App() {
   const [clearTrigger, setClearTrigger] = useState(0);
 
   const [uploadedObject, setUploadedObject] = useState<UploadedObject | null>(null);
+  const [canvasTransform, setCanvasTransform] = useState({ scale: 1 });
 
   const originalImageUrl = useMemo(() => {
     if (selectedImage) {
@@ -67,7 +74,10 @@ function App() {
     setError(null);
     
     try {
-        const generationResults = await visualizeDesign(drawnImageDataUrl, prompt);
+        const hasDrawings = canvasRef.current?.hasDrawings() ?? false;
+        const maskDataUrl = hasDrawings ? canvasRef.current?.getMaskDataUrl() : null;
+        
+        const generationResults = await visualizeDesign(drawnImageDataUrl, prompt, maskDataUrl);
         
         const newIteration: DesignIteration = {
           prompt: prompt,
@@ -181,7 +191,7 @@ function App() {
                     onUndo={() => setUndoTrigger(t => t + 1)}
                     onClear={() => setClearTrigger(t => t + 1)}
                   />
-                  <div className="mt-4">
+                  <div className="mt-4 relative">
                      <DrawingCanvas
                         ref={canvasRef}
                         imageSrc={activeImageUrl}
@@ -190,8 +200,15 @@ function App() {
                         clearTrigger={clearTrigger}
                         uploadedObject={uploadedObject}
                         onObjectUpdate={handleObjectUpdate}
+                        onTransformChange={setCanvasTransform}
                         key={activeImageUrl} // Force re-render when image source changes
                      />
+                     <ZoomControls
+                        scale={canvasTransform.scale}
+                        onZoomIn={() => canvasRef.current?.zoomIn()}
+                        onZoomOut={() => canvasRef.current?.zoomOut()}
+                        onReset={() => canvasRef.current?.resetZoom()}
+                      />
                   </div>
                 </div>
               </>

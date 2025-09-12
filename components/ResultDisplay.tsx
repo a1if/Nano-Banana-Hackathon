@@ -12,7 +12,8 @@ interface ResultDisplayProps {
 }
 
 export const ResultDisplay: React.FC<ResultDisplayProps> = ({ originalImageUrl, designHistory, isLoading, error, onSelect, activeImageUrl }) => {
-  const handleDownload = (imageUrl: string) => {
+  const handleDownload = (imageUrl: string | undefined) => {
+    if (!imageUrl) return;
     const link = document.createElement('a');
     link.href = imageUrl;
     link.download = `design-result-${Date.now()}.png`;
@@ -71,7 +72,7 @@ export const ResultDisplay: React.FC<ResultDisplayProps> = ({ originalImageUrl, 
       )}
 
       {designHistory.map((iteration, iterIndex) => (
-        <div key={iterIndex}>
+        <div key={iteration.id}>
           <div className="mb-4">
             <h3 className="text-xl font-bold text-gray-800">Iteration {iterIndex + 1}</h3>
             <p className="text-sm text-gray-600 bg-gray-100 p-2 rounded-md mt-1">
@@ -80,8 +81,9 @@ export const ResultDisplay: React.FC<ResultDisplayProps> = ({ originalImageUrl, 
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {iteration.results.map((result, resIndex) => (
+              result.success && result.imageUrl &&
               <div 
-                key={resIndex} 
+                key={result.id} 
                 className="bg-white rounded-lg shadow-md overflow-hidden cursor-pointer group"
                 onClick={() => onSelect(iterIndex, resIndex)}
               >

@@ -6,15 +6,15 @@ interface DrawingCanvasProps {
   options: DrawingOptions;
   undoTrigger: number;
   clearTrigger: number;
-  uploadedObject: UploadedObject | null;
+  uploadedObjects: UploadedObject[];
   onObjectUpdate: (obj: UploadedObject) => void;
   onTransformChange: (transform: { scale: number }) => void;
 }
 
 type Interaction = 
   | { type: 'draw' }
-  | { type: 'move'; startX: number; startY: number; }
-  | { type: 'resize'; handle: 'br' | 'bl' | 'tr' | 'tl'; }
+  | { type: 'move'; objectId: string; startX: number; startY: number; }
+  | { type: 'resize'; objectId: string; handle: 'br' }
   | null;
 
 const HANDLE_SIZE = 10;
@@ -30,26 +30,26 @@ export const DrawingCanvas = forwardRef<{
   zoomOut: () => void;
   resetZoom: () => void;
 }, DrawingCanvasProps>(
-  ({ imageSrc, options, undoTrigger, clearTrigger, uploadedObject, onObjectUpdate, onTransformChange }, ref) => {
-    const canvasRef = useRef<HTMLCanvasElement>(null); // Visible canvas
-    const drawingCanvasRef = useRef<HTMLCanvasElement | null>(null); // Off-screen canvas for persistent drawings
+  ({ imageSrc, options, undoTrigger, clearTrigger, uploadedObjects, onObjectUpdate, onTransformChange }, ref) => {
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const drawingCanvasRef = useRef<HTMLCanvasElement | null>(null);
     
     const [baseImage, setBaseImage] = useState<HTMLImageElement | null>(null);
-    const [objectImage, setObjectImage] = useState<HTMLImageElement | null>(null);
+    const [objectImages, setObjectImages] = useState<Record<string, HTMLImageElement>>({});
     const [history, setHistory] = useState<ImageData[]>([]);
-
+    
     // Interaction state
     const [isInteracting, setIsInteracting] = useState(false);
     const [interaction, setInteraction] = useState<Interaction>(null);
     const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null);
     const [currentPos, setCurrentPos] = useState<{ x: number; y: number } | null>(null);
+    const [activeObjectId, setActiveObjectId] = useState<string | null>(null);
 
     // Viewport transform state
     const [transform, setTransform] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
     const [isPanning, setIsPanning] = useState(false);
     const [panStart, setPanStart] = useState({ x: 0, y: 0 });
 
-    // Load base image and initialize canvases
     useEffect(() => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
@@ -57,13 +57,11 @@ export const DrawingCanvas = forwardRef<{
       img.onload = () => {
         const canvas = canvasRef.current;
         if (canvas) {
-          // Set visible canvas dimensions based on aspect ratio
           const containerWidth = canvas.parentElement?.clientWidth || img.naturalWidth;
           const scale = containerWidth / img.naturalWidth;
           canvas.width = containerWidth;
           canvas.height = img.naturalHeight * scale;
 
-          // Create and size the off-screen drawing canvas to match the image's native resolution
           const offscreenCanvas = document.createElement('canvas');
           offscreenCanvas.width = img.naturalWidth;
           offscreenCanvas.height = img.naturalHeight;
@@ -75,50 +73,55 @@ export const DrawingCanvas = forwardRef<{
       };
     }, [imageSrc]);
     
-    // Load uploaded object image
     useEffect(() => {
-        if (uploadedObject?.imageUrl) {
-            const img = new Image();
-            img.src = uploadedObject.imageUrl;
-            img.onload = () => setObjectImage(img);
-        } else {
-            setObjectImage(null);
-        }
-    }, [uploadedObject?.imageUrl]);
+      const newImages: Record<string, HTMLImageElement> = {};
+      const promises = uploadedObjects.map(obj => {
+        return new Promise<void>(resolve => {
+          const existingImage = objectImages[obj.id];
+          if (existingImage && existingImage.src === obj.imageUrl) {
+            newImages[obj.id] = existingImage;
+            resolve();
+            return;
+          }
+          const img = new Image();
+          img.src = obj.imageUrl;
+          img.onload = () => {
+            newImages[obj.id] = img;
+            resolve();
+          };
+          img.onerror = () => resolve();
+        });
+      });
+      Promise.all(promises).then(() => {
+        setObjectImages(newImages);
+      });
+    }, [uploadedObjects]);
 
-    // Undo/Clear triggers
     useEffect(() => { if (undoTrigger > 0) handleUndo(); }, [undoTrigger]);
     useEffect(() => { if (clearTrigger > 0) handleClear(); }, [clearTrigger]);
 
-    // Inform parent of transform changes
     useEffect(() => {
       onTransformChange({ scale: transform.scale });
     }, [transform.scale, onTransformChange]);
 
-    // Main redraw effect
     useEffect(() => {
       redraw();
-    }, [baseImage, objectImage, uploadedObject, history, transform, currentPos, isInteracting]);
+    }, [baseImage, objectImages, uploadedObjects, history, transform, currentPos, isInteracting, activeObjectId]);
 
 
     const getTransformedCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
       const canvas = canvasRef.current;
       if (!canvas) return { x: 0, y: 0 };
       const rect = canvas.getBoundingClientRect();
-      
       const imageScaleX = canvas.width / (baseImage?.naturalWidth || canvas.width);
       const imageScaleY = canvas.height / (baseImage?.naturalHeight || canvas.height);
 
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
-
       const canvasX = (mouseX - transform.offsetX) / transform.scale;
       const canvasY = (mouseY - transform.offsetY) / transform.scale;
       
-      return { 
-        x: canvasX / imageScaleX, 
-        y: canvasY / imageScaleY,
-      };
+      return { x: canvasX / imageScaleX, y: canvasY / imageScaleY };
     };
 
     const redraw = () => {
@@ -131,34 +134,30 @@ export const DrawingCanvas = forwardRef<{
       const imageScaleY = canvas.height / baseImage.naturalHeight;
       
       ctx.save();
-      // Use a background color to prevent flickering during redraw
       ctx.fillStyle = '#f9fafb';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Apply viewport transform (pan and zoom)
       ctx.translate(transform.offsetX, transform.offsetY);
       ctx.scale(transform.scale, transform.scale);
-      
-      // Draw base image scaled to fit the visible canvas
       ctx.drawImage(baseImage, 0, 0, canvas.width, canvas.height);
       
-      // Draw persistent drawings from the off-screen canvas
       if (drawingCanvas) {
         ctx.drawImage(drawingCanvas, 0, 0, canvas.width, canvas.height);
       }
       
-      // Draw uploaded object, scaling its position and size to the visible canvas
-      if (uploadedObject && objectImage) {
-        ctx.drawImage(objectImage, uploadedObject.x * imageScaleX, uploadedObject.y * imageScaleY, uploadedObject.width * imageScaleX, uploadedObject.height * imageScaleY);
-        drawObjectHandles(ctx, uploadedObject);
-      }
-
-      // Draw a temporary preview of the shape being drawn (line, rect, circle)
+      uploadedObjects.forEach(obj => {
+        const objectImage = objectImages[obj.id];
+        if (objectImage) {
+          ctx.drawImage(objectImage, obj.x * imageScaleX, obj.y * imageScaleY, obj.width * imageScaleX, obj.height * imageScaleY);
+          if (obj.id === activeObjectId) {
+            drawObjectHandles(ctx, obj);
+          }
+        }
+      });
+      
       if (isInteracting && interaction?.type === 'draw' && startPos && currentPos && ['LINE', 'RECTANGLE', 'CIRCLE'].includes(options.mode)) {
         ctx.strokeStyle = options.color;
         ctx.lineWidth = options.size;
         ctx.globalCompositeOperation = 'source-over';
-        
         ctx.beginPath();
         switch (options.mode) {
           case 'LINE':
@@ -169,9 +168,7 @@ export const DrawingCanvas = forwardRef<{
             ctx.rect(startPos.x * imageScaleX, startPos.y * imageScaleY, (currentPos.x - startPos.x) * imageScaleX, (currentPos.y - startPos.y) * imageScaleY);
             break;
           case 'CIRCLE':
-            const radiusX = (currentPos.x - startPos.x) * imageScaleX;
-            const radiusY = (currentPos.y - startPos.y) * imageScaleY;
-            const radius = Math.sqrt(radiusX * radiusX + radiusY * radiusY);
+            const radius = Math.sqrt(Math.pow((currentPos.x - startPos.x) * imageScaleX, 2) + Math.pow((currentPos.y - startPos.y) * imageScaleY, 2));
             ctx.arc(startPos.x * imageScaleX, startPos.y * imageScaleY, radius, 0, 2 * Math.PI);
             break;
         }
@@ -214,9 +211,12 @@ export const DrawingCanvas = forwardRef<{
             if (drawingCanvas) {
                 ctx.drawImage(drawingCanvas, 0, 0);
             }
-            if (uploadedObject && objectImage) {
-                ctx.drawImage(objectImage, uploadedObject.x, uploadedObject.y, uploadedObject.width, uploadedObject.height);
-            }
+            uploadedObjects.forEach(obj => {
+                const objectImage = objectImages[obj.id];
+                if (objectImage) {
+                    ctx.drawImage(objectImage, obj.x, obj.y, obj.width, obj.height);
+                }
+            });
             
             return tempCanvas.toDataURL('image/png');
         },
@@ -229,13 +229,13 @@ export const DrawingCanvas = forwardRef<{
             maskCanvas.height = baseImage.naturalHeight;
             const ctx = maskCanvas.getContext('2d');
             if (!ctx) return null;
-
-            ctx.fillStyle = 'black';
-            ctx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+            
             ctx.drawImage(drawingCanvas, 0, 0);
-
             ctx.globalCompositeOperation = 'source-in';
             ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+            ctx.globalCompositeOperation = 'destination-over';
+            ctx.fillStyle = 'black';
             ctx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
 
             return maskCanvas.toDataURL('image/png');
@@ -256,13 +256,14 @@ export const DrawingCanvas = forwardRef<{
     };
     
     const handleUndo = () => {
+      if (history.length === 0) return;
       const newHistory = history.slice(0, -1);
       const drawingCanvas = drawingCanvasRef.current;
-      if (drawingCanvas) {
-        const ctx = drawingCanvas.getContext('2d');
-        ctx?.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+      const ctx = drawingCanvas?.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, drawingCanvas!.width, drawingCanvas!.height);
         if (newHistory.length > 0) {
-          ctx?.putImageData(newHistory[newHistory.length - 1], 0, 0);
+          ctx.putImageData(newHistory[newHistory.length - 1], 0, 0);
         }
       }
       setHistory(newHistory);
@@ -271,51 +272,57 @@ export const DrawingCanvas = forwardRef<{
     const handleClear = () => {
       const drawingCanvas = drawingCanvasRef.current;
       if (drawingCanvas) {
-        const ctx = drawingCanvas.getContext('2d');
-        ctx?.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+        drawingCanvas.getContext('2d')?.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
       }
       setHistory([]);
     };
 
     const startInteraction = (e: React.MouseEvent<HTMLCanvasElement>) => {
-        if (e.button === 2) { // Right-click for panning
+        if (e.button === 2) {
             setIsPanning(true);
             setPanStart({ x: e.clientX, y: e.clientY });
             return;
         }
 
         const pos = getTransformedCoords(e);
-        
-        if (uploadedObject) {
-            const { x, y, width, height } = uploadedObject;
-            const handleSize = HANDLE_SIZE / transform.scale / (canvasRef.current?.width || 1 / (baseImage?.naturalWidth || 1));
-            if (pos.x > x + width - handleSize && pos.x < x + width + handleSize && pos.y > y + height - handleSize && pos.y < y + height + handleSize) {
-                setInteraction({ type: 'resize', handle: 'br' });
-                setIsInteracting(true);
-                return;
-            }
-            if (pos.x > x && pos.x < x + width && pos.y > y && pos.y < y + height) {
-                setInteraction({ type: 'move', startX: pos.x - x, startY: pos.y - y });
-                setIsInteracting(true);
-                return;
-            }
+        let objectHit = false;
+
+        for (let i = uploadedObjects.length - 1; i >= 0; i--) {
+          const obj = uploadedObjects[i];
+          const { x, y, width, height } = obj;
+          const handleSize = HANDLE_SIZE / transform.scale / (canvasRef.current!.width / baseImage!.naturalWidth);
+
+          if (pos.x > x + width - handleSize && pos.x < x + width + handleSize && pos.y > y + height - handleSize && pos.y < y + height + handleSize) {
+              setInteraction({ type: 'resize', handle: 'br', objectId: obj.id });
+              setActiveObjectId(obj.id);
+              objectHit = true;
+              break;
+          }
+          if (pos.x > x && pos.x < x + width && pos.y > y && pos.y < y + height) {
+              setInteraction({ type: 'move', startX: pos.x - x, startY: pos.y - y, objectId: obj.id });
+              setActiveObjectId(obj.id);
+              objectHit = true;
+              break;
+          }
         }
-      
-        setInteraction({ type: 'draw' });
+
         setIsInteracting(true);
+        if (objectHit) return;
+
+        setActiveObjectId(null);
+        setInteraction({ type: 'draw' });
         setStartPos(pos);
         setCurrentPos(pos);
         
         if (options.mode === 'BRUSH' || options.mode === 'ERASER') {
             const drawingCtx = drawingCanvasRef.current?.getContext('2d');
             if (!drawingCtx) return;
-            
+            saveToHistory();
             drawingCtx.strokeStyle = options.color;
             drawingCtx.lineWidth = options.size;
             drawingCtx.lineCap = 'round';
             drawingCtx.lineJoin = 'round';
             drawingCtx.globalCompositeOperation = options.mode === 'ERASER' ? 'destination-out' : 'source-over';
-            
             drawingCtx.beginPath();
             drawingCtx.moveTo(pos.x, pos.y);
         }
@@ -334,12 +341,14 @@ export const DrawingCanvas = forwardRef<{
         const pos = getTransformedCoords(e);
         setCurrentPos(pos);
 
-        if (interaction.type === 'move' && uploadedObject) {
-            onObjectUpdate({ ...uploadedObject, x: pos.x - interaction.startX, y: pos.y - interaction.startY });
-        } else if (interaction.type === 'resize' && uploadedObject) {
-            const newWidth = Math.max(pos.x - uploadedObject.x, HANDLE_SIZE * 2);
-            const aspectRatio = uploadedObject.height / uploadedObject.width;
-            onObjectUpdate({ ...uploadedObject, width: newWidth, height: newWidth * aspectRatio });
+        const currentObject = uploadedObjects.find(o => o.id === (interaction.type !== 'draw' ? interaction.objectId : null));
+
+        if (interaction.type === 'move' && currentObject) {
+            onObjectUpdate({ ...currentObject, x: pos.x - interaction.startX, y: pos.y - interaction.startY });
+        } else if (interaction.type === 'resize' && currentObject) {
+            const newWidth = Math.max(pos.x - currentObject.x, HANDLE_SIZE * 2);
+            const aspectRatio = currentObject.height / currentObject.width;
+            onObjectUpdate({ ...currentObject, width: newWidth, height: newWidth * aspectRatio });
         } else if (interaction.type === 'draw' && (options.mode === 'BRUSH' || options.mode === 'ERASER')) {
             const drawingCtx = drawingCanvasRef.current?.getContext('2d');
             if (drawingCtx) {
@@ -363,32 +372,31 @@ export const DrawingCanvas = forwardRef<{
               drawingCtx.lineWidth = options.size;
               drawingCtx.lineCap = 'round';
               drawingCtx.lineJoin = 'round';
-              drawingCtx.globalCompositeOperation = 'source-over'; // No eraser for shapes
+              drawingCtx.globalCompositeOperation = 'source-over';
 
               drawingCtx.beginPath();
               switch (options.mode) {
                   case 'LINE':
-                      drawingCtx.moveTo(startPos.x, startPos.y);
-                      drawingCtx.lineTo(currentPos.x, currentPos.y);
-                      drawingCtx.stroke();
-                      break;
                   case 'RECTANGLE':
-                      drawingCtx.rect(startPos.x, startPos.y, currentPos.x - startPos.x, currentPos.y - startPos.y);
-                      drawingCtx.stroke();
-                      break;
                   case 'CIRCLE':
-                      const radius = Math.sqrt(Math.pow(currentPos.x - startPos.x, 2) + Math.pow(currentPos.y - startPos.y, 2));
-                      drawingCtx.arc(startPos.x, startPos.y, radius, 0, 2 * Math.PI);
+                      saveToHistory(); // Save before drawing shape
+                      if (options.mode === 'LINE') {
+                          drawingCtx.moveTo(startPos.x, startPos.y);
+                          drawingCtx.lineTo(currentPos.x, currentPos.y);
+                      } else if (options.mode === 'RECTANGLE') {
+                          drawingCtx.rect(startPos.x, startPos.y, currentPos.x - startPos.x, currentPos.y - startPos.y);
+                      } else { // CIRCLE
+                          const radius = Math.sqrt(Math.pow(currentPos.x - startPos.x, 2) + Math.pow(currentPos.y - startPos.y, 2));
+                          drawingCtx.arc(startPos.x, startPos.y, radius, 0, 2 * Math.PI);
+                      }
                       drawingCtx.stroke();
                       break;
                   case 'BRUSH':
                   case 'ERASER':
-                      // Already drawn, just close the path
                       drawingCtx.closePath();
                       break;
               }
           }
-          saveToHistory();
         }
         
         setIsInteracting(false);
@@ -402,11 +410,9 @@ export const DrawingCanvas = forwardRef<{
         const handleWheel = (e: WheelEvent) => {
             e.preventDefault();
             if (!canvas) return;
-
             const rect = canvas.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
-
             const zoom = 1 - e.deltaY * 0.001;
             
             setTransform(prev => {

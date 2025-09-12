@@ -38,7 +38,7 @@ function App() {
   const [undoTrigger, setUndoTrigger] = useState(0);
   const [clearTrigger, setClearTrigger] = useState(0);
 
-  const [uploadedObject, setUploadedObject] = useState<UploadedObject | null>(null);
+  const [uploadedObjects, setUploadedObjects] = useState<UploadedObject[]>([]);
   const [canvasTransform, setCanvasTransform] = useState({ scale: 1 });
 
   const originalImageUrl = useMemo(() => {
@@ -55,7 +55,7 @@ function App() {
     setDesignHistory([]);
     setError(null);
     setPrompt('');
-    setUploadedObject(null);
+    setUploadedObjects([]);
   };
   
   const handleGenerate = async () => {
@@ -80,15 +80,18 @@ function App() {
         const generationResults = await visualizeDesign(drawnImageDataUrl, prompt, maskDataUrl);
         
         const newIteration: DesignIteration = {
+          id: `iter-${Date.now()}`,
           prompt: prompt,
           inputImageUrl: activeImageUrl!,
+          model: 'gemini-2.5-flash-image-preview',
           results: generationResults,
+          createdAt: new Date().toISOString(),
         };
         
         setDesignHistory(prev => [...prev, newIteration]);
-        if (generationResults.length > 0) {
+        if (generationResults.length > 0 && generationResults[0].imageUrl) {
             setActiveImageUrl(generationResults[0].imageUrl);
-            setUploadedObject(null); // Clear object after generation for a clean slate
+            setUploadedObjects([]); // Clear objects after generation for a clean slate
         }
 
     } catch (e) {
@@ -104,10 +107,10 @@ function App() {
 
   const handleSelectHistoryItem = (iterationIndex: number, resultIndex: number) => {
     const selectedIteration = designHistory[iterationIndex];
-    if (selectedIteration && selectedIteration.results[resultIndex]) {
-        setActiveImageUrl(selectedIteration.results[resultIndex].imageUrl);
+    if (selectedIteration && selectedIteration.results[resultIndex] && selectedIteration.results[resultIndex].imageUrl) {
+        setActiveImageUrl(selectedIteration.results[resultIndex].imageUrl!);
         setDesignHistory(prev => prev.slice(0, iterationIndex + 1));
-        setUploadedObject(null); // Clear any object when navigating history
+        setUploadedObjects([]); // Clear any object when navigating history
     }
   };
 
@@ -118,7 +121,7 @@ function App() {
     setPrompt('');
     setIsLoading(false);
     setError(null);
-    setUploadedObject(null);
+    setUploadedObjects([]);
     setDrawingOptions({
       color: '#EF4444',
       size: 10,
@@ -136,25 +139,31 @@ function App() {
         const canvasWidth = canvas?.width || 800; // Use a fallback width
         const aspectRatio = img.width / img.height;
         const defaultWidth = canvasWidth * 0.25;
-        setUploadedObject({
+        const offset = uploadedObjects.length * 20;
+
+        const newObject: UploadedObject = {
+          id: `obj-${Date.now()}`,
           imageUrl: imageUrl,
           width: defaultWidth,
           height: defaultWidth / aspectRatio,
-          x: 50,
-          y: 50,
-        });
+          x: 50 + offset,
+          y: 50 + offset,
+        };
+        setUploadedObjects(prev => [...prev, newObject]);
       };
       img.src = imageUrl;
     };
     reader.readAsDataURL(file);
   };
 
-  const handleObjectUpdate = (newObject: UploadedObject) => {
-    setUploadedObject(newObject);
+  const handleObjectUpdate = (updatedObject: UploadedObject) => {
+    setUploadedObjects(prev => 
+      prev.map(obj => obj.id === updatedObject.id ? updatedObject : obj)
+    );
   };
 
-  const handleObjectRemove = () => {
-    setUploadedObject(null);
+  const handleObjectRemove = (objectId: string) => {
+    setUploadedObjects(prev => prev.filter(obj => obj.id !== objectId));
   };
 
   return (
@@ -171,11 +180,11 @@ function App() {
 
             {selectedImage && (
               <div>
-                <h2 className="text-xl font-bold text-gray-800 mb-4">2. Place an object (optional)</h2>
+                <h2 className="text-xl font-bold text-gray-800 mb-4">2. Add objects (optional)</h2>
                 <ObjectUploader
                   onObjectUpload={handleObjectUpload}
                   onObjectRemove={handleObjectRemove}
-                  uploadedObjectUrl={uploadedObject?.imageUrl || null}
+                  uploadedObjects={uploadedObjects}
                   disabled={!selectedImage || isLoading}
                 />
               </div>
@@ -198,7 +207,7 @@ function App() {
                         options={drawingOptions}
                         undoTrigger={undoTrigger}
                         clearTrigger={clearTrigger}
-                        uploadedObject={uploadedObject}
+                        uploadedObjects={uploadedObjects}
                         onObjectUpdate={handleObjectUpdate}
                         onTransformChange={setCanvasTransform}
                         key={activeImageUrl} // Force re-render when image source changes

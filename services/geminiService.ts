@@ -29,7 +29,9 @@ export const visualizeDesign = async (imageSource: string, prompt: string, maskS
 
       const textPart = { text: prompt };
 
-      const imageParts = [imagePart];
+      // The parts array for the API call.
+      // The order is important for inpainting: image, then prompt, then mask.
+      const parts = [imagePart, textPart];
 
       if (maskSource) {
         const { base64: maskBase64, mimeType: maskMimeType } = dataUrlToInfo(maskSource);
@@ -39,14 +41,9 @@ export const visualizeDesign = async (imageSource: string, prompt: string, maskS
             mimeType: maskMimeType,
           },
         };
-        imageParts.push(maskPart);
+        parts.push(maskPart);
       }
       
-      // FIX: The parts array for the API call must be correctly typed to accept both image
-      // and text parts. By creating the final array at the end with the spread operator,
-      // TypeScript can correctly infer the union type for the array elements.
-      const parts = [...imageParts, textPart];
-
       const response: GenerateContentResponse = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image-preview',
         contents: { parts: parts },
@@ -73,7 +70,13 @@ export const visualizeDesign = async (imageSource: string, prompt: string, maskS
         }
 
         if (newImageUrl) {
-          return { imageUrl: newImageUrl, text: newText };
+          return { 
+            id: `res-${Date.now()}-${Math.random()}`,
+            imageUrl: newImageUrl, 
+            text: newText,
+            success: true,
+            createdAt: new Date().toISOString(),
+          };
         }
       }
     } catch (error) {
@@ -90,7 +93,7 @@ export const visualizeDesign = async (imageSource: string, prompt: string, maskS
   }
   
   const resultsWithNulls = await Promise.all(generationPromises);
-  const finalResults = resultsWithNulls.filter((r): r is GenerationResult => r !== null);
+  const finalResults = resultsWithNulls.filter((r): r is GenerationResult => r !== null && r.success);
 
 
   if (finalResults.length === 0) {
